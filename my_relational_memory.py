@@ -205,7 +205,7 @@ class RelationalMemoryCell(LayerRNNCell):
         att_mem_mat = self._attend_over_memory(mem_mat, inputs)
         att_mem = tf.layers.flatten(att_mem_mat)
 
-        # i = input_gate, j = new_input, f = forget_gate, o = output_gate
+        # i = input_gate, f = forget_gate, o = output_gate
         i, f, o = array_ops.split(
             value=gate_inputs, num_or_size_splits=self.gate_num, axis=one)
 
@@ -215,10 +215,6 @@ class RelationalMemoryCell(LayerRNNCell):
         new_c = add(multiply(c, sigmoid(add(f, forget_bias_tensor))),
                     multiply(sigmoid(i), self._activation(att_mem)))
         new_h = multiply(self._activation(new_c), sigmoid(o))
-
-        # to seperate input
-        # n = inputs.get_shape().as_list()[1]
-        # next_memory = mem_mat[:, :-n, :]
 
         # f_plus_bias_mat = tf.reshape(sigmoid(add(f, forget_bias_tensor)), [-1, self._mem_slots, self._mem_size])
         # i_mat = tf.reshape(sigmoid(i), [-1, self._mem_slots, self._mem_size])
