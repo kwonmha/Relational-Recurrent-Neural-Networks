@@ -7,7 +7,6 @@ from tensorflow.python.ops import init_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import nn_ops
 from tensorflow.python.platform import tf_logging as logging
-from tensorflow.python.util.tf_export import tf_export
 
 from tensorflow.python.ops.rnn_cell_impl import LayerRNNCell, LSTMStateTuple
 
@@ -86,6 +85,7 @@ class RelationalMemoryCell(LayerRNNCell):
         self._forget_bias = forget_bias
         self._state_is_tuple = state_is_tuple
         self._activation = activation or math_ops.tanh
+        self.gate_num = 3
 
     @property
     def state_size(self):
@@ -122,14 +122,13 @@ class RelationalMemoryCell(LayerRNNCell):
         h_depth = self._num_units
         self._kernel = self.add_variable(
             _WEIGHTS_VARIABLE_NAME,
-            shape=[input_depth + h_depth, 2 * self._num_units])
+            shape=[input_depth + h_depth, self.gate_num * self._num_units])
         self._bias = self.add_variable(
             _BIAS_VARIABLE_NAME,
-            shape=[2 * self._num_units],
+            shape=[self.gate_num * self._num_units],
             initializer=init_ops.zeros_initializer(dtype=self.dtype))  # remove output gate
 
         self.built = True
-
 
     def _multi_head_attention(self, memory, input):
         memory_plus_input = tf.concat([memory, input], axis=1)
@@ -177,10 +176,8 @@ class RelationalMemoryCell(LayerRNNCell):
 
         return memory
 
-
     def call(self, inputs, state):
-        """Long short-term memory cell (LSTM).
-
+        """
         Args:
           inputs: `2-D` tensor with shape `[batch_size, input_size]`.
           state: An `LSTMStateTuple` of state tensors, each shaped
@@ -195,49 +192,43 @@ class RelationalMemoryCell(LayerRNNCell):
         """
         sigmoid = math_ops.sigmoid
         one = constant_op.constant(1, dtype=dtypes.int32)
-        mem, _ = state  # state consists of same objects
-        # Parameters of gates are concatenated into one multiply for efficiency.
-        # if self._state_is_tuple:
-        #     c, h = state
-        # else:
-        #     c, h = array_ops.split(value=state, num_or_size_splits=2, axis=one)
+        c, h = state  # state consists of same objects
 
         # vector -> matrix
         # print(mem.get_shape())  #(b, mem_slot * mem_size)
-        mem_mat = tf.reshape(mem, [-1, self._mem_slots, self._mem_size])
-        # print(mem_mat.get_shape())  #(b, mem_slot, mem_size)
+        mem_mat = tf.reshape(c, [-1, self._mem_slots, self._mem_size])
 
         gate_inputs = math_ops.matmul(
-            array_ops.concat([inputs, mem], 1), self._kernel)
+            array_ops.concat([inputs, h], 1), self._kernel)
         gate_inputs = nn_ops.bias_add(gate_inputs, self._bias)
 
         att_mem_mat = self._attend_over_memory(mem_mat, inputs)
+        att_mem = tf.layers.flatten(att_mem_mat)
 
         # i = input_gate, j = new_input, f = forget_gate, o = output_gate
-        i, f = array_ops.split(
-            value=gate_inputs, num_or_size_splits=2, axis=one)
+        i, f, o = array_ops.split(
+            value=gate_inputs, num_or_size_splits=self.gate_num, axis=one)
 
         forget_bias_tensor = constant_op.constant(self._forget_bias, dtype=f.dtype)
-        # Note that using `add` and `multiply` instead of `+` and `*` gives a
-        # performance improvement. So using those at the cost of readability.
         add = math_ops.add
         multiply = math_ops.multiply
-        # new_c = add(multiply(c, sigmoid(add(f, forget_bias_tensor))),
-        #             multiply(sigmoid(i), self._activation(j)))
-        # new_h = multiply(self._activation(new_c), sigmoid(o))
+        new_c = add(multiply(c, sigmoid(add(f, forget_bias_tensor))),
+                    multiply(sigmoid(i), self._activation(att_mem)))
+        new_h = multiply(self._activation(new_c), sigmoid(o))
 
-        f_plus_bias_mat = tf.reshape(sigmoid(add(f, forget_bias_tensor)), [-1, self._mem_slots, self._mem_size])
-        i_mat = tf.reshape(sigmoid(i), [-1, self._mem_slots, self._mem_size])
-        new_mem_mat = multiply(f_plus_bias_mat, mem_mat)
-        new_mem_mat = add(new_mem_mat, multiply(i_mat, self._activation(att_mem_mat)))
+        # to seperate input
+        # n = inputs.get_shape().as_list()[1]
+        # next_memory = mem_mat[:, :-n, :]
 
-        # if self._state_is_tuple:
-        #     new_state = LSTMStateTuple(new_c, new_h)
-        # else:
-        #     new_state = array_ops.concat([new_c, new_h], 1)
+        # f_plus_bias_mat = tf.reshape(sigmoid(add(f, forget_bias_tensor)), [-1, self._mem_slots, self._mem_size])
+        # i_mat = tf.reshape(sigmoid(i), [-1, self._mem_slots, self._mem_size])
+        # j_mat = tf.reshape(sigmoid(j), [-1, self._mem_slots, self._mem_size])
+        # new_mem_mat = multiply(f_plus_bias_mat, mem_mat)
+        # # new_mem_mat = add(new_mem_mat, multiply(i_mat, self._activation(att_mem_mat)))
+        # new_mem_mat = add(new_mem_mat, multiply(i_mat, self._activation(j_mat)))
 
-        new_h = tf.layers.flatten(new_mem_mat)  #(b, num_unit)
-        new_state = LSTMStateTuple(new_h, new_h)
+        # new_h = tf.layers.flatten(new_c)  #(b, num_unit)
+        new_state = LSTMStateTuple(new_c, new_h)
         return new_h, new_state
 
 

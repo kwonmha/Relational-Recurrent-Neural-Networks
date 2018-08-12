@@ -164,6 +164,7 @@ class PTBModel(object):
         grads, _ = tf.clip_by_global_norm(tf.gradients(self._cost, tvars),
                                           config.max_grad_norm)
         optimizer = tf.train.GradientDescentOptimizer(self._lr)
+        # optimizer = tf.train.AdamOptimizer()
         self._train_op = optimizer.apply_gradients(
             zip(grads, tvars),
             global_step=tf.train.get_or_create_global_step())
@@ -232,13 +233,14 @@ class PTBModel(object):
         cells = [make_cell() for _ in range(config.num_layers)]
         multi_cell = tf.contrib.rnn.MultiRNNCell(cells, state_is_tuple=True)
 
-        if config.rnn_mode != RMC: self._initial_state = multi_cell.zero_state(config.batch_size, data_type())
-        else:
-            lstm_tuple_list = []
-            for cell in cells:
-                c, h = cell.init_state(config.batch_size)
-                lstm_tuple_list.append(LSTMStateTuple(c, h))
-            self._initial_state = tuple(lstm_tuple_list)
+        self._initial_state = multi_cell.zero_state(config.batch_size, data_type())
+        # if config.rnn_mode != RMC: self._initial_state = multi_cell.zero_state(config.batch_size, data_type())
+        # else:
+        #     lstm_tuple_list = []
+        #     for cell in cells:
+        #         c, h = cell.init_state(config.batch_size)
+        #         lstm_tuple_list.append(LSTMStateTuple(c, h))
+        #     self._initial_state = tuple(lstm_tuple_list)
         state = self._initial_state
 
         # Simplified version of tf.nn.static_rnn().
@@ -362,12 +364,12 @@ class MediumConfig(object):
     max_max_epoch = 39
     keep_prob = 1.5
     lr_decay = 0.8
-    batch_size = 20
+    batch_size = 10
     vocab_size = 10000
     # mem_size = 1000
-    head_size = 125 # 1000 / num_heads, used 2500 in paper for wiki 103 data
+    head_size = 50 # 1000 / num_heads, used 2500 in paper for wiki 103 data
     num_heads = 2
-    mem_slots = 4
+    mem_slots = 5
     mlp_layers = 5
     num_blocks = 1
 
@@ -435,6 +437,7 @@ def run_epoch(session, model, eval_op=None, verbose=False):
         iters += model.input.num_steps
 
         if verbose and step % (model.input.epoch_size // 10) == 10:
+            print(costs/iters)
             print("%.3f perplexity: %.3f speed: %.0f wps" %
                   (step * 1.0 / model.input.epoch_size, np.exp(costs / iters),
                    iters * model.input.batch_size * max(1, FLAGS.num_gpus) /
@@ -494,7 +497,7 @@ def main(_):
             with tf.variable_scope("Model", reuse=None, initializer=initializer):
                 m = PTBModel(is_training=True, config=config, input_=train_input)
             tf.summary.scalar("Training Loss", m.cost)
-            tf.summary.scalar("Learning Rate", m.lr)
+            # tf.summary.scalar("Learning Rate", m.lr)
 
         with tf.name_scope("Valid"):
             valid_input = PTBInput(config=config, data=valid_data, name="ValidInput")
