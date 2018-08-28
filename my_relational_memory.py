@@ -130,24 +130,23 @@ class RelationalMemoryCell(LayerRNNCell):
 
         self.built = True
 
-    def _multi_head_attention(self, memory, input):
-        memory_plus_input = tf.concat([memory, input], axis=1)
+    def _multi_head_attention(self, memory, inputs):
+        memory_plus_input = tf.concat([memory, inputs], axis=1)
         # print(memory_plus_input.get_shape())  #(b, 2* slot, mem_size)
 
         mi_slots = memory_plus_input.get_shape().as_list()[1]
         q_proj_mat = tf.get_variable("q_projection", [self._mem_size, self._mem_size])
-        kv_proj_mat = tf.get_variable("kv_projection",
-                                      [self._mem_size,  2 * self._mem_size])
+        kv_proj_mat = tf.get_variable("kv_projection", [self._mem_size,  2 * self._mem_size])
 
         q = tf.tensordot(memory, q_proj_mat, axes=[[2], [0]])  #(b, slot, mem_size)
         kv = tf.tensordot(memory_plus_input, kv_proj_mat, axes=[[2], [0]])  #(b, 2*slot, 2 * mem_size)
 
         q_reshape = tf.reshape(q, [-1, self._mem_slots, self._num_heads, self._head_size])  #(b, mem_slot, heads, head_size)
-        kv_reshape = tf.reshape(kv, [-1, mi_slots, self._num_heads, self._head_size * 2])  #(b, mem_slot*2, heads, head_size)
+        kv_reshape = tf.reshape(kv, [-1, mi_slots, self._num_heads, self._head_size * 2])  #(b, mem_slot*2, heads,  2* head_size)
 
         q_transpose = tf.transpose(q_reshape, [0, 2, 1, 3]) #(b, head, slot, mem/head)
-        kv_transpose = tf.transpose(kv_reshape, [0, 2, 1, 3])  #(b, head, slot * 2, mem/head)
-        k, v = tf.split(kv_transpose, [self._head_size, self._head_size], -1)  #(b, head, slot * 2, head_size)
+        kv_transpose = tf.transpose(kv_reshape, [0, 2, 1, 3])  #(b, head, slot * 2, mem/head * 2)
+        k, v = tf.split(kv_transpose, [self._head_size, self._head_size], -1)  #(b, head, slot * 2, head_size) each
 
         qk = tf.nn.softmax(tf.matmul(q_transpose, k, transpose_b=True) / (self._head_size ** 0.5))  # [B, H, N, 2*N]
         qkv = tf.matmul(qk, v)  #(b, heads, slot, head_size)
