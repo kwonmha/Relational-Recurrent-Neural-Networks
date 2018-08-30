@@ -118,15 +118,17 @@ class RelationalMemoryCell(LayerRNNCell):
             raise ValueError("Expected inputs.shape[-1] to be known, saw shape: %s"
                              % inputs_shape)
 
-        input_depth = inputs_shape[1].value
-        h_depth = self._num_units
+        input_depth = inputs_shape[1].value / self._mem_slots
+        h_depth = self._mem_size  # inputs, h are all vectors
         self._kernel = self.add_variable(
             _WEIGHTS_VARIABLE_NAME,
-            shape=[input_depth + h_depth, self.gate_num * self._num_units])
+            # shape=[input_depth + h_depth, self.gate_num * self._mem_size])  # for "unit" gate style
+            shape=[input_depth + h_depth, self.gate_num])
         self._bias = self.add_variable(
             _BIAS_VARIABLE_NAME,
-            shape=[self.gate_num * self._num_units],
-            initializer=init_ops.zeros_initializer(dtype=self.dtype))  # remove output gate
+            # shape=[self.gate_num * self._mem_size],  # for "unit" gate style
+            shape=[self.gate_num],
+            initializer=init_ops.zeros_initializer(dtype=self.dtype))  # remove output gate -> preserve output gate
 
         self.built = True
 
@@ -189,40 +191,39 @@ class RelationalMemoryCell(LayerRNNCell):
             `LSTMStateTuple` or a concatenated state, depending on
             `state_is_tuple`).
         """
-        sigmoid = math_ops.sigmoid
-        one = constant_op.constant(1, dtype=dtypes.int32)
-        c, h = state  # state consists of same objects
+        c, h = state  # state consists of same objects  # (b, mem_slot * mem_size)
 
-        # vector -> matrix
-        # print(mem.get_shape())  #(b, mem_slot * mem_size)
+        h_mat = tf.reshape(h, [-1, self._mem_slots, self._mem_size])
+        inputs_mat = tf.reshape(inputs, [-1, self._mem_slots, self._mem_size])
+        input_plus_h = array_ops.concat([inputs_mat, h_mat], 2) # (b, slots, 2*mem_size)
+        # gate_inputs = math_ops.matmul(input_plus_h, self._kernel)  # (b, 2*units) * (2*units, 3)
+        gate_inputs = tf.tensordot(input_plus_h, self._kernel, axes=[[2], [0]])  # (b, slots, 2*mem_size) (2*mem_size, 3)
+        gate_inputs = nn_ops.bias_add(gate_inputs, self._bias)  # (b, 2*slots, 3)
+
+        # vector -> matrix as initial state is vector
         mem_mat = tf.reshape(c, [-1, self._mem_slots, self._mem_size])
-
-        gate_inputs = math_ops.matmul(
-            array_ops.concat([inputs, h], 1), self._kernel)
-        gate_inputs = nn_ops.bias_add(gate_inputs, self._bias)
-
         att_mem_mat = self._attend_over_memory(mem_mat, inputs)
-        att_mem = tf.layers.flatten(att_mem_mat)
+        # att_mem = tf.layers.flatten(att_mem_mat)
 
         # i = input_gate, f = forget_gate, o = output_gate
         i, f, o = array_ops.split(
-            value=gate_inputs, num_or_size_splits=self.gate_num, axis=one)
+            value=gate_inputs, num_or_size_splits=self.gate_num, axis=2)
+        # print(i.get_shape(), "i")  # (b, slots, 1)
 
         forget_bias_tensor = constant_op.constant(self._forget_bias, dtype=f.dtype)
+        sigmoid = math_ops.sigmoid
         add = math_ops.add
         multiply = math_ops.multiply
-        new_c = add(multiply(c, sigmoid(add(f, forget_bias_tensor))),
-                    multiply(sigmoid(i), self._activation(att_mem)))
+
+        c_mat = tf.reshape(c, [-1, self._mem_slots, self._mem_size])
+        new_c = add(multiply(c_mat, sigmoid(add(f, forget_bias_tensor))),
+                    multiply(sigmoid(i), self._activation(att_mem_mat)))
         new_h = multiply(self._activation(new_c), sigmoid(o))
 
-        # f_plus_bias_mat = tf.reshape(sigmoid(add(f, forget_bias_tensor)), [-1, self._mem_slots, self._mem_size])
-        # i_mat = tf.reshape(sigmoid(i), [-1, self._mem_slots, self._mem_size])
-        # j_mat = tf.reshape(sigmoid(j), [-1, self._mem_slots, self._mem_size])
-        # new_mem_mat = multiply(f_plus_bias_mat, mem_mat)
-        # # new_mem_mat = add(new_mem_mat, multiply(i_mat, self._activation(att_mem_mat)))
-        # new_mem_mat = add(new_mem_mat, multiply(i_mat, self._activation(j_mat)))
+        # matrix -> vector
+        new_c = tf.layers.flatten(new_c)
+        new_h = tf.layers.flatten(new_h)
 
-        # new_h = tf.layers.flatten(new_c)  #(b, num_unit)
         new_state = LSTMStateTuple(new_c, new_h)
         return new_h, new_state
 
